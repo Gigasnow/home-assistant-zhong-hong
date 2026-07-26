@@ -1,16 +1,25 @@
+"""Config flow for ZhongHong HVAC integration."""
+
 import logging
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_NAME
+from homeassistant.const import CONF_NAME, CONF_PORT
 from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
-    DOMAIN,
-    DEFAULT_PORT,
     CONF_GATEWAY_ADDRESS,
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_REFRESH_INTERVAL,
+    CONF_USERNAME,
     DEFAULT_GATEWAY_ADDRESS,
+    DEFAULT_PASSWORD,
+    DEFAULT_PORT,
+    DEFAULT_REFRESH_INTERVAL,
+    DEFAULT_USERNAME,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,14 +35,15 @@ class ZhonghongConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            host = user_input[CONF_HOST]
+            # 统一使用 CONF_IP_ADDRESS ("ip_address") 作为键名
+            ip_address = user_input[CONF_IP_ADDRESS]
             gw_addr = user_input.get(CONF_GATEWAY_ADDRESS, DEFAULT_GATEWAY_ADDRESS)
 
             # 设置唯一 ID 防止同一个网关重复添加
-            await self.async_set_unique_id(f"{host}_{gw_addr}")
+            await self.async_set_unique_id(f"{ip_address}_{gw_addr}")
             self._abort_if_unique_id_configured()
 
-            title = user_input.get(CONF_NAME) or f"ZhongHong ({host})"
+            title = user_input.get(CONF_NAME) or f"中弘网关 ({ip_address})"
             return self.async_create_entry(title=title, data=user_input)
 
         return self.async_show_form(
@@ -46,10 +56,15 @@ class ZhonghongConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Return the schema for user input."""
         return vol.Schema(
             {
-                vol.Required(CONF_HOST): str,
+                vol.Required(CONF_IP_ADDRESS): str,  # 表单字段对齐为 ip_address
                 vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
                 vol.Optional(
                     CONF_GATEWAY_ADDRESS, default=DEFAULT_GATEWAY_ADDRESS
+                ): int,
+                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+                vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): str,
+                vol.Optional(
+                    CONF_REFRESH_INTERVAL, default=DEFAULT_REFRESH_INTERVAL
                 ): int,
                 vol.Optional(CONF_NAME, default=""): str,
             }
@@ -75,12 +90,20 @@ class ZhonghongOptionsFlow(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_PORT,
-                        default=self.config_entry.data.get(CONF_PORT, DEFAULT_PORT),
+                        default=self.config_entry.data.get(
+                            CONF_PORT, DEFAULT_PORT
+                        ),
                     ): cv.port,
                     vol.Optional(
                         CONF_GATEWAY_ADDRESS,
                         default=self.config_entry.data.get(
                             CONF_GATEWAY_ADDRESS, DEFAULT_GATEWAY_ADDRESS
+                        ),
+                    ): int,
+                    vol.Optional(
+                        CONF_REFRESH_INTERVAL,
+                        default=self.config_entry.data.get(
+                            CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
                         ),
                     ): int,
                 }
