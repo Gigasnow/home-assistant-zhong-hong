@@ -1,63 +1,67 @@
 """Library to handle connection with ZhongHong HTTP Gateway."""
 
+import asyncio
+from enum import StrEnum
+import json
+import logging
 import socket
-import time
-from collections import defaultdict
 from sys import platform
 from threading import Thread
-import aiohttp
-import asyncio
-import json
+import time
 
-import logging
+import aiohttp
+
 _LOGGER = logging.getLogger(__name__)
-# _LOGGER.setLevel(logging.DEBUG)
 
 SOCKET_BUFSIZE = 1024
 
-from enum import StrEnum
 
 class AC_Feature(StrEnum):
-    GROUP = 'grp'
-    AC_OUTDOOR = 'oa'
-    AC_INDOOR = 'ia'
-    AC_IDX = 'idx'
-    STATE = 'on'
-    TEMP_SET = 'tempSet'
-    MODE = 'mode'
-    FAN = 'fan'
-    TEMP_INDOOR = 'tempIn'
-    ALARM = 'alarm'
+    GROUP = "grp"
+    AC_OUTDOOR = "oa"
+    AC_INDOOR = "ia"
+    AC_IDX = "idx"
+    STATE = "on"
+    TEMP_SET = "tempSet"
+    MODE = "mode"
+    FAN = "fan"
+    TEMP_INDOOR = "tempIn"
+    ALARM = "alarm"
+
 
 class Endpoint(StrEnum):
     HOST = "http://{gateway}/cgi-bin/api.html?"
-    STATUS = 'f=17&p={p}'
-    CONTROL = 'f=18&idx={idx}&on={on}&mode={mode}&tempSet={tempSet}&fan={fan}'
-    AC_BRAND = f'f=24'
-    DEVICE_INFO = f'f=1'
+    STATUS = "f=17&p={p}"
+    CONTROL = "f=18&idx={idx}&on={on}&mode={mode}&tempSet={tempSet}&fan={fan}"
+    AC_BRAND = "f=24"
+    DEVICE_INFO = "f=1"
+
 
 class ZhongHongGateway:
-    def __init__(self, ip_addr: str, port: int, username: str = 'admin', password: str = ''):
+    """Class to interact with ZhongHong HTTP Gateway."""
+
+    def __init__(
+        self,
+        ip_addr: str,
+        port: int,
+        username: str = "admin",
+        password: str = "",
+    ):
         if platform not in ("darwin", "linux", "linux2"):
-            raise Exception(f'platform {platform} is not supported.')
-        
+            raise Exception(f"platform {platform} is not supported.")
+
         self.ip_addr = ip_addr
         self.port = port
         self.sock = None
         self.devices = {}
         self._listening = False
         self._threads = []
-        
+
         self.username = username
         self.password = password
         self._lock = asyncio.Lock()
-        # self.update_callback = None
         self._update_callbacks = []
         self.device_info = {}
-
-    # def register_update_callback(self, callback):
-    #     """Register a callback to notify when devices are updated."""
-    #     self.update_callback = callback
 
     def register_update_callback(self, callback):
         """Register a callback to notify when devices are updated."""
@@ -80,46 +84,67 @@ class ZhongHongGateway:
                 _LOGGER.error("Error in update callback: %s", e)
 
     async def parse_resp(self, url, data):
+        """Parse HTTP 400 response containing non-standard json format."""
         try:
-            _LOGGER.debug(f'async_get 400: data: {data}')
-            parsed_data = data[data.find("'")+1:data.rfind("'")]
+            _LOGGER.debug(f"async_get 400: data: {data}")
+            parsed_data = data[data.find("'") + 1 : data.rfind("'")]
             return json.loads(parsed_data)
         except Exception as error:
-            _LOGGER.debug(f'json parse failed: Error: {error}')
+            _LOGGER.debug(f"json parse failed: Error: {error}")
             return await self.async_get(url)
 
     async def async_get(self, url):
         """Make GET API call."""
         try:
-            async with aiohttp.ClientSession(auth=aiohttp.BasicAuth(self.username, self.password), connector=aiohttp.TCPConnector()) as session:
+            async with aiohttp.ClientSession(
+                auth=aiohttp.BasicAuth(self.username, self.password),
+                connector=aiohttp.TCPConnector(),
+            ) as session:
                 async with session.get(url) as resp:
-                    _LOGGER.debug(f'async_get suceesfully: {url}. resp: {resp}')
+                    _LOGGER.debug(
+                        f"async_get successfully: {url}. resp: {resp}"
+                    )
                     return json.loads(await resp.text())
         except aiohttp.client_exceptions.ClientResponseError as error:
-            if error.status == 400 and 'Expected HTTP/' in error.message:
+            if error.status == 400 and "Expected HTTP/" in error.message:
                 return await self.parse_resp(url, error.message)
-            _LOGGER.debug(f'async_get failed 400: {url}. Error: {error}')
+            _LOGGER.debug(f"async_get failed 400: {url}. Error: {error}")
         except Exception as error:
-            _LOGGER.debug(f'async_get failed: {url}. Error: {error}')
+            _LOGGER.debug(f"async_get failed: {url}. Error: {error}")
         return None
 
-    async def async_ac_list(self, max_retries = 3):
-        # async with self._lock:
+    async def async_ac_list(self, max_retries=3):
+        """Fetch list of all connected indoor units (fixed non-recursive retry)."""
         p = 0
         acs_list = []
-        while max_retries > 0:
-            url = f'{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.STATUS}'.format(p=p)
+        retry_count = 0
+
+        while retry_count < max_retries:
+            url = f"{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.STATUS}".format(
+                p=p
+            )
             resp = await self.async_get(url)
-            if resp == None:
-                max_retries = max_retries - 1
-                await self.async_ac_list(max_retries)
-                return
-            unit = resp.get('unit', [])
+
+            if resp is None:
+                retry_count += 1
+                _LOGGER.warning(
+                    "Failed to fetch AC list from %s (p=%s), retry %s/%s",
+                    self.ip_addr,
+                    p,
+                    retry_count,
+                    max_retries,
+                )
+                await asyncio.sleep(1)
+                continue
+
+            unit = resp.get("unit", [])
             acs_list.extend(unit)
+
             if len(unit) == 0:
                 break
             p += 1
-        if max_retries > 0:
+
+        if acs_list:
             self.devices = {
                 f"{ac[AC_Feature.GROUP] + 1}_{ac[AC_Feature.AC_OUTDOOR]}_{ac[AC_Feature.AC_INDOOR]}": ac
                 for ac in acs_list
@@ -128,23 +153,36 @@ class ZhongHongGateway:
                 self._notify_update_callbacks()
 
     async def async_set_ac(self, ac_name, idx, ac_json):
+        """Send control command to a specific AC unit."""
         async with self._lock:
-            url = f'{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.CONTROL}'.format(
-                idx = idx, 
-                on=ac_json.get(AC_Feature.STATE,  self.devices.get(ac_name).get(AC_Feature.STATE)),
-                mode=ac_json.get(AC_Feature.MODE, self.devices.get(ac_name).get(AC_Feature.MODE)),
-                tempSet=ac_json.get(AC_Feature.TEMP_SET, self.devices.get(ac_name).get(AC_Feature.TEMP_SET)),
-                fan=ac_json.get(AC_Feature.FAN, self.devices.get(ac_name).get(AC_Feature.FAN))
-                )
+            current_device = self.devices.get(ac_name, {})
+            url = f"{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.CONTROL}".format(
+                idx=idx,
+                on=ac_json.get(
+                    AC_Feature.STATE, current_device.get(AC_Feature.STATE)
+                ),
+                mode=ac_json.get(
+                    AC_Feature.MODE, current_device.get(AC_Feature.MODE)
+                ),
+                tempSet=ac_json.get(
+                    AC_Feature.TEMP_SET, current_device.get(AC_Feature.TEMP_SET)
+                ),
+                fan=ac_json.get(
+                    AC_Feature.FAN, current_device.get(AC_Feature.FAN)
+                ),
+            )
             resp = await self.async_get(url)
-            if resp == None:
+            if resp is None:
                 return
-            
-            self.devices[ac_name].update(ac_json)
-            if self._update_callbacks:
-                self._notify_update_callbacks()
+
+            if ac_name in self.devices:
+                self.devices[ac_name].update(ac_json)
+                if self._update_callbacks:
+                    self._notify_update_callbacks()
 
     async def async_get_device_info(self):
+        """Fetch brand and gateway hardware version info."""
+
         def get_brand(brand, proto):
             if brand == 1:
                 return "日立"
@@ -154,7 +192,7 @@ class ZhongHongGateway:
                 return "东芝"
             if brand == 4:
                 if proto > 0:
-                    "三菱重工(KX4)"
+                    return "三菱重工(KX4)"  # 修复了这里的缺失 return
                 return "三菱重工"
             if brand == 5:
                 return "三菱电机"
@@ -204,30 +242,27 @@ class ZhongHongGateway:
                 return "特灵"
             if brand == 255:
                 return f"模拟器{proto}台"
-            return ""
+            return "未知品牌"
 
-        # async with self._lock:
-        url = f'{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.AC_BRAND}'
+        url = f"{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.AC_BRAND}"
         resp = await self.async_get(url)
-        if resp == None:
-            return
-        self.device_info['manufacturer'] = get_brand(resp['brand'], resp['proto'])
+        if resp is not None:
+            self.device_info["manufacturer"] = get_brand(
+                resp.get("brand"), resp.get("proto")
+            )
 
-        url = f'{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.DEVICE_INFO}'
+        url = f"{Endpoint.HOST.format(gateway=self.ip_addr)}{Endpoint.DEVICE_INFO}"
         resp = await self.async_get(url)
-        if resp == None:
-            return
-        self.device_info['model'] = resp['model']
-        self.device_info['model_id'] = resp['id']
-        self.device_info['sw_version'] = resp['sw']
+        if resp is not None:
+            self.device_info["model"] = resp.get("model", "ZhongHong Gateway")
+            self.device_info["model_id"] = resp.get("id", "")
+            self.device_info["sw_version"] = resp.get("sw", "")
 
     def __get_socket(self) -> socket.socket:
         _LOGGER.debug("Opening socket to (%s, %s)", self.ip_addr, self.port)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         if platform in ("linux", "linux2"):
-            s.setsockopt(
-                socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1
-            )  # pylint: disable=E1101
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1)
         if platform in ("darwin", "linux", "linux2"):
             s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 3)
@@ -250,24 +285,18 @@ class ZhongHongGateway:
 
         try:
             return self.sock.recv(SOCKET_BUFSIZE)
-
         except ConnectionResetError:
             _LOGGER.debug("Connection reset by peer")
             self.open_socket()
-
         except socket.timeout as e:
             _LOGGER.error("timeout error", exc_info=e)
             self.open_socket()
-
         except OSError as e:
-            if e.errno == 9:  # when socket close, errorno 9 will raise
+            if e.errno == 9:
                 _LOGGER.debug("OSError 9 raise, socket is closed")
-
             else:
                 _LOGGER.error("unknown error when recv", exc_info=e)
-
             self.open_socket()
-
         except Exception as e:
             _LOGGER.error("unknown error when recv", exc_info=e)
             self.open_socket()
@@ -283,8 +312,8 @@ class ZhongHongGateway:
 
     def _listen_to_msg(self, data):
         _LOGGER.debug(f"recv data << {data.hex()}")
+
         def modbus_crc16(data):
-            # data = bytes.fromhex(hex_string)
             crc = 0xFFFF
             for pos in data:
                 crc ^= pos
@@ -294,10 +323,9 @@ class ZhongHongGateway:
                         crc ^= 0xA001
                     else:
                         crc >>= 1
-            return crc.to_bytes(2, byteorder='little')
+            return crc.to_bytes(2, byteorder="little")
 
         def parse_tcp_payload(data):
-            """Parse 16-hex payload from TCP data."""
             ac = {}
             if len(data) != 25:
                 return ac
@@ -308,10 +336,10 @@ class ZhongHongGateway:
             payload = data[8:-2]
             if sum(payload[:-1]) & 0xFF != int(payload[-1]):
                 return ac
-            # 仅支持单台空调的数据查询
             if payload[1] != 0x50 or len(payload) != 15:
                 return ac
-            ac[AC_Feature.GROUP] = int(payload[0])    # 猜测对应http协议的grp + 1
+
+            ac[AC_Feature.GROUP] = int(payload[0])
             ac[AC_Feature.AC_OUTDOOR] = int(payload[4])
             ac[AC_Feature.AC_INDOOR] = int(payload[5])
             ac[AC_Feature.STATE] = int(payload[6])
@@ -320,15 +348,16 @@ class ZhongHongGateway:
             ac[AC_Feature.FAN] = int(payload[9])
             ac[AC_Feature.TEMP_INDOOR] = int(payload[10])
             ac[AC_Feature.ALARM] = int(payload[11])
-            _LOGGER.debug(f'get ac_data << {ac}')
+            _LOGGER.debug(f"get ac_data << {ac}")
             return ac
 
         ac = parse_tcp_payload(data)
-        if ac != {}:
+        if ac:
             ac_name = f"{ac[AC_Feature.GROUP]}_{ac[AC_Feature.AC_OUTDOOR]}_{ac[AC_Feature.AC_INDOOR]}"
-            self.devices[ac_name].update(ac)
-            if self._update_callbacks:
-                self._notify_update_callbacks()
+            if ac_name in self.devices:
+                self.devices[ac_name].update(ac)
+                if self._update_callbacks:
+                    self._notify_update_callbacks()
 
     def start_listen(self):
         """Start listening."""
