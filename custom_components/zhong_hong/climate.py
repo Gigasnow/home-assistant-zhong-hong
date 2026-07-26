@@ -1,142 +1,155 @@
-"""Support for ZhongHong HVAC Controller with Multi-Gateway and Config Flow support."""
-import logging
-import voluptuous as vol
+"""Support for ZhongHong Climate entities with Multi-Gateway support."""
 
-from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
-from homeassistant.components.climate.const import (
+import logging
+
+from homeassistant.components.climate import (
+    ClimateEntity,
     ClimateEntityFeature,
+    HVACMode,
+)
+from homeassistant.components.climate.const import (
+    FAN_HIGH,
     FAN_LOW,
     FAN_MEDIUM,
-    FAN_HIGH,
-    FAN_AUTO,
 )
 from homeassistant.const import (
     ATTR_TEMPERATURE,
-    CONF_HOST,
-    CONF_NAME,
-    CONF_PORT,
     UnitOfTemperature,
 )
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-REQUIREMENTS = ["zhong_hong_hvac==1.0.9"]
+from .client import AC_Feature
+from .const import CONF_IP_ADDRESS, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_PORT = 9999
-DEFAULT_GATEWAY_ADDRESS = 1
+SUPPORTED_HVAC_MODES = {
+    HVACMode.OFF: 0,
+    HVACMode.COOL: 1,
+    HVACMode.DRY: 2,
+    HVACMode.FAN_ONLY: 4,
+    HVACMode.HEAT: 8,
+}
 
-CONF_GATEWAY_ADDRESS = "gateway_address"
-
-# 1. YAML 配置模式的 Schema 定义
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-        vol.Optional(
-            CONF_GATEWAY_ADDRESS, default=DEFAULT_GATEWAY_ADDRESS
-        ): cv.positive_int,
-        vol.Optional(CONF_NAME): cv.string,
-    }
-)
+SUPPORTED_FAN_MODES = {
+    FAN_HIGH: 1,
+    FAN_MEDIUM: 2,
+    FAN_LOW: 4,
+}
 
 
-# 2. UI 界面添加模式的入口 (核心修复点)
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up ZhongHong climate platform from a UI Config Entry."""
-    from zhong_hong_hvac.hub import ZhongHongGateway
+    """Set up Zhonghong climate entity from a config entry."""
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    gateway = config_entry.data.get(CONF_IP_ADDRESS, "")
 
-    # 从 Config Entry 数据中读取参数
-    config = config_entry.data
-    host = config.get(CONF_HOST)
-    port = config.get(CONF_PORT, DEFAULT_PORT)
-    gw_addr = config.get(CONF_GATEWAY_ADDRESS, DEFAULT_GATEWAY_ADDRESS)
-    name_prefix = config.get(CONF_NAME) or config_entry.title
-
-    _LOGGER.info("Setting up ZhongHong entry: %s:%s (gw: %s)", host, port, gw_addr)
-
-    # 异步执行耗时的 TCP 连接和空调发现任务
-    try:
-        hub = await hass.async_add_executor_job(ZhongHongGateway, host, port, gw_addr)
-        ac_list = await hass.async_add_executor_job(hub.discovery_ac)
-    except Exception as err:
-        _LOGGER.error("Failed to connect or discover AC from %s:%s - %s", host, port, err)
-        return
-
-    devices = [
-        ZhongHongClimate(hub, addr_out, addr_in, host, gw_addr, name_prefix)
-        for addr_out, addr_in in ac_list
-    ]
-
-    async_add_entities(devices, True)
-
-
-# 3. 传统 YAML 模式的入口 (保留兼容)
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the ZhongHong climate platform from YAML configuration."""
-    from zhong_hong_hvac.hub import ZhongHongGateway
-
-    host = config.get(CONF_HOST)
-    port = config.get(CONF_PORT, DEFAULT_PORT)
-    gw_addr = config.get(CONF_GATEWAY_ADDRESS, DEFAULT_GATEWAY_ADDRESS)
-    name_prefix = config.get(CONF_NAME)
-
-    _LOGGER.info("Initializing ZhongHong gateway via YAML at %s:%s (addr: %s)", host, port, gw_addr)
-
-    hub = ZhongHongGateway(host, port, gw_addr)
-
-    try:
-        ac_list = hub.discovery_ac()
-    except Exception as err:
-        _LOGGER.error("Failed to discover AC units from %s:%s: %s", host, port, err)
-        return
-
-    devices = [
-        ZhongHongClimate(hub, addr_out, addr_in, host, gw_addr, name_prefix)
-        for addr_out, addr_in in ac_list
-    ]
-
-    add_entities(devices, True)
-
-
-class ZhongHongClimate(ClimateEntity):
-    """Representation of a ZhongHong climate entity."""
-
-    def __init__(self, hub, addr_out, addr_in, host, gw_addr, name_prefix=None):
-        """Initialize the climate device."""
-        self._hub = hub
-        self._addr_out = addr_out
-        self._addr_in = addr_in
-        self._host = host
-        self._gw_addr = gw_addr
-        self._name_prefix = name_prefix
-
-        # 唯一 ID，防止多网关内机冲突
-        self._attr_unique_id = (
-            f"zhong_hong_{self._host}_{self._gw_addr}_{self._addr_out}_{self._addr_in}"
+    climates = []
+    # 遍历 Coordinator 抓取到的所有空调设备
+    for ac_name, config in coordinator.data.items():
+        climates.append(
+            ZhongHongClimateEntity(
+                coordinator=coordinator,
+                gateway=gateway,
+                ac_name=ac_name,
+                config=config,
+                entry_id=config_entry.entry_id,  # 传入 entry_id 实现多网关隔离
+            )
         )
 
-    @property
-    def name(self):
-        """Return the name of the climate device."""
-        if self._name_prefix:
-            return f"{self._name_prefix} AC {self._addr_out}-{self._addr_in}"
-        return f"ZhongHong AC {self._host} {self._addr_out}-{self._addr_in}"
+    async_add_entities(climates, update_before_add=True)
+
+
+class ZhongHongClimateEntity(CoordinatorEntity, ClimateEntity):
+    """Representation of a ZhongHong Climate device."""
+
+    _attr_hvac_modes = [
+        HVACMode.COOL,
+        HVACMode.HEAT,
+        HVACMode.DRY,
+        HVACMode.FAN_ONLY,
+        HVACMode.OFF,
+    ]
+    _attr_fan_modes = [
+        FAN_HIGH,
+        FAN_MEDIUM,
+        FAN_LOW,
+    ]
+    _attr_should_poll = False
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.FAN_MODE
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.TURN_ON
+    )
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _enable_turn_on_off_backwards_compatibility = False
+
+    _attr_max_temp: float = 30
+    _attr_min_temp: float = 16
+    _attr_precision: float = 1
+
+    def __init__(self, coordinator, gateway, ac_name, config, entry_id):
+        """初始化 Zhonghong 空调实体"""
+        super().__init__(coordinator)
+        self._gateway = gateway
+        self._ac_name = ac_name
+        self._entry_id = entry_id
+        self._idx = config.get(AC_Feature.AC_IDX)
+        self._attr_name = self._ac_name
+
+        self._current_operation = None
+        self._current_temperature = None
+        self._target_temperature = None
+        self._current_fan_mode = None
+        self.is_initialized = False
+
+        # 设备分组标识，包含 entry_id 防止多网关下设备重叠
+        device_info = self.coordinator.client.device_info.copy()
+        group_id = config.get(AC_Feature.GROUP, 0) + 1
+        device_info["identifiers"] = {(DOMAIN, f"{self._entry_id}_{group_id}")}
+        self._attr_device_info = device_info
 
     @property
-    def temperature_unit(self):
-        """Return the unit of measurement."""
-        return UnitOfTemperature.CELSIUS
+    def unique_id(self):
+        """Return the unique ID of the HVAC entity, preventing multi-gateway collision."""
+        # 加入 entry_id，即使两台网关都有 1_0_1 空调，也会生成独立的 unique_id
+        return f"zhong_hong_http_{self._entry_id}_{self._ac_name}"
+
+    @property
+    def has_entity_name(self) -> bool:
+        """Indicate that entity has name defined."""
+        return True
+
+    @property
+    def _ac_data(self):
+        """Helper to safely get current AC data from coordinator."""
+        if self.coordinator.data:
+            return self.coordinator.data.get(self._ac_name, {})
+        return {}
+
+    @property
+    def hvac_mode(self) -> HVACMode:
+        """Return current operation ie. heat, cool, idle."""
+        if not self.is_on:
+            return HVACMode.OFF
+
+        mode_value = self._ac_data.get(AC_Feature.MODE)
+        for key, value in SUPPORTED_HVAC_MODES.items():
+            if value == mode_value:
+                return key
+        return None
 
     @property
     def current_temperature(self):
         """Return the current temperature."""
-        return self._hub.get_climate_info(self._addr_out, self._addr_in).current_temp
+        temp = self._ac_data.get(AC_Feature.TEMP_INDOOR)
+        return float(temp) if temp is not None else None
 
     @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        return self._hub.get_climate_info(self._addr_out, self._addr_in).target_temp
+        temp = self._ac_data.get(AC_Feature.TEMP_SET)
+        return float(temp) if temp is not None else None
 
     @property
     def target_temperature_step(self):
@@ -144,44 +157,52 @@ class ZhongHongClimate(ClimateEntity):
         return 1
 
     @property
-    def hvac_mode(self):
-        """Return hvac operation ie. heat, cool mode."""
-        return self._hub.get_climate_info(self._addr_out, self._addr_in).hvac_mode
-
-    @property
-    def hvac_modes(self):
-        """Return the list of available hvac operation modes."""
-        return self._hub.hvac_modes
+    def is_on(self):
+        """Return true if on."""
+        state = self._ac_data.get(AC_Feature.STATE) == 1
+        _LOGGER.debug("%s state: %s", self._ac_name, state)
+        return state
 
     @property
     def fan_mode(self):
         """Return the fan setting."""
-        return self._hub.get_climate_info(self._addr_out, self._addr_in).fan_mode
+        fan_value = self._ac_data.get(AC_Feature.FAN)
+        for key, value in SUPPORTED_FAN_MODES.items():
+            if value == fan_value:
+                return key
+        return None
 
-    @property
-    def fan_modes(self):
-        """Return the list of available fan modes."""
-        return [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
-
-    @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
-
-    def set_temperature(self, **kwargs):
+    async def async_set_temperature(self, **kwargs) -> None:
         """Set new target temperature."""
-        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
+        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            _LOGGER.debug("async_set_temperature: %s", temperature)
+            await self._send_control_command(
+                {AC_Feature.STATE: 1, AC_Feature.TEMP_SET: int(temperature)}
+            )
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """设置新的HVAC模式并发送控制命令"""
+        _LOGGER.debug("async_set_hvac_mode: %s", hvac_mode)
+        if hvac_mode == HVACMode.OFF:
+            if self.is_on:
+                await self._send_control_command({AC_Feature.STATE: 0})
             return
-        self._hub.set_temperature(self._addr_out, self._addr_in, temperature)
 
-    def set_hvac_mode(self, hvac_mode):
-        """Set new target hvac mode."""
-        self._hub.set_hvac_mode(self._addr_out, self._addr_in, hvac_mode)
+        mode = SUPPORTED_HVAC_MODES.get(hvac_mode, 0)
+        await self._send_control_command(
+            {AC_Feature.STATE: 1, AC_Feature.MODE: mode}
+        )
 
-    def set_fan_mode(self, fan_mode):
-        """Set new target fan mode."""
-        self._hub.set_fan_mode(self._addr_out, self._addr_in, fan_mode)
+    async def async_set_fan_mode(self, fan_mode) -> None:
+        """设置新的风速模式并发送控制命令"""
+        _LOGGER.debug("async_set_fan_mode: %s", fan_mode)
+        fan_speed = SUPPORTED_FAN_MODES.get(fan_mode, 0)
+        await self._send_control_command(
+            {AC_Feature.STATE: 1, AC_Feature.FAN: fan_speed}
+        )
 
-    def update(self):
-        """Retrieve latest state."""
-        self._hub.query_status(self._addr_out, self._addr_in)
+    async def _send_control_command(self, ac_json):
+        """向网关发送控制命令"""
+        await self.coordinator.client.async_set_ac(
+            self._ac_name, self._idx, ac_json
+        )
