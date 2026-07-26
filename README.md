@@ -1,10 +1,10 @@
 # 中弘VRF网关 (绿米版) Home Assistant集成
-
+Gemini爆改原先的集成，支持了多网关，测试三星和美的都能同时添加进去并正常运行
 集成使用了HTTP+TCP混合的方式解决了原有HTTP方式响应延迟的问题，使用体验更友好。
 
 > [!WARNING]
 > 
-> 该集成仅适用于中弘VRF绿米版本的网关，且仅支持一个外机，并只测试了以下图示设备，可能会有不兼容的问题。
+> 该集成仅适用于中弘VRF绿米版本的网关，且支持多个外机，并只测试了以下图示设备，可能会有不兼容的问题。
 
 <a href="B19"><img src="https://zhonghongtech.cn/upload/pro_img/171937526799334.jpg" width="256" ></a>
 
@@ -12,7 +12,7 @@
 
 ## 使用 HACS 安装
 
-[![打开 Home Assistant 并打开 HACS商店内的存储库。](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=gigasnow&repository=[home-assistant-zhong-hong multiple](https://github.com/gigasnow/home-assistant-zhong-hong)&category=integration)
+[![打开 Home Assistant 并打开 HACS商店内的存储库。](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=gigasnow&repository=[home-assistant-zhong-hong-multiple](https://github.com/gigasnow/home-assistant-zhong-hong)&category=integration)
 
 ## 手动安装
 
