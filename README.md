@@ -12,7 +12,7 @@
 
 ## 使用 HACS 安装
 
-[![打开 Home Assistant 并打开 HACS商店内的存储库。](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=xswxm&repository=[home-assistant-zhong-hong](https://github.com/xswxm/home-assistant-zhong-hong)&category=integration)
+[![打开 Home Assistant 并打开 HACS商店内的存储库。](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=gigasnow&repository=[home-assistant-zhong-hong multiple](https://github.com/gigasnow/home-assistant-zhong-hong)&category=integration)
 
 ## 手动安装
 
