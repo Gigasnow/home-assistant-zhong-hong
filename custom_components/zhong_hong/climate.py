@@ -29,7 +29,6 @@ DEFAULT_GATEWAY_ADDRESS = 1
 
 CONF_GATEWAY_ADDRESS = "gateway_address"
 
-# 扩充 PLATFORM_SCHEMA，支持可选的 name 前缀
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Required(CONF_HOST): cv.string,
@@ -44,7 +43,8 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the ZhongHong climate platform."""
-    from zhong_hong_hvac.hub import ZhongHongHub
+    # 修正类名为 ZhongHongGateway
+    from zhong_hong_hvac.hub import ZhongHongGateway
 
     host = config.get(CONF_HOST)
     port = config.get(CONF_PORT)
@@ -53,8 +53,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 
     _LOGGER.info("Initializing ZhongHong gateway at %s:%s (addr: %s)", host, port, gw_addr)
 
-    # 独立实例化每个网关 Hub
-    hub = ZhongHongHub(host, port, gw_addr)
+    hub = ZhongHongGateway(host, port, gw_addr)
     devices = []
 
     try:
@@ -83,7 +82,6 @@ class ZhongHongClimate(ClimateEntity):
         self._gw_addr = gw_addr
         self._name_prefix = name_prefix
 
-        # 将 Host 和 Gateway Address 融入 unique_id，防止多网关出现 ID 冲突
         self._attr_unique_id = (
             f"zhong_hong_{self._host}_{self._gw_addr}_{self._addr_out}_{self._addr_in}"
         )
