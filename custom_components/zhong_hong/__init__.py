@@ -27,8 +27,14 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the Zhonghong component from a config entry."""
-    # 安全地从 entry.options 或 entry.data 中获取配置，防止 KeyError
-    ip_address = entry.data.get(CONF_IP_ADDRESS)
+    # 从 entry.data 和 entry.options 中优先提取配置
+    # 严格匹配 CONF_IP_ADDRESS ("ip_address")
+    ip_address = entry.data.get(CONF_IP_ADDRESS) or entry.options.get(CONF_IP_ADDRESS)
+    
+    if not ip_address:
+        _LOGGER.error("ZhongHong setup failed: Missing IP address in Config Entry data: %s", entry.data)
+        return False
+
     port = entry.options.get(
         CONF_PORT, entry.data.get(CONF_PORT, DEFAULT_PORT)
     )
@@ -43,6 +49,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL),
     )
 
+    _LOGGER.info("Setting up ZhongHong Gateway entry with IP: %s:%s", ip_address, port)
+
     coordinator = ZhongHongDataCoordinator(
         hass, ip_address, port, username, password, scan_interval
     )
@@ -53,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         _LOGGER.warning("Failed to fetch device info from %s: %s", ip_address, err)
 
-    # 首次拉取数据
+    # 首次拉取数据（如果获取不到空调，自动触发重试）
     await coordinator.async_config_entry_first_refresh()
 
     # 存入 hass.data，以 entry_id 隔离不同网关
@@ -65,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 启动后台 TCP 监听
     coordinator.client.start_listen()
 
-    # 添加选项更改监听器（用户在界面修改参数时自动重载）
+    # 添加选项更改监听器
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     return True
@@ -88,7 +96,6 @@ class ZhongHongDataCoordinator(DataUpdateCoordinator):
     def _unregister_update_callback(self):
         """Unregister callback and stop listening."""
         self.client.unregister_update_callback(self._on_client_devices_updated)
-        # 彻底关闭后台 TCP 线程和 Socket，防止内存泄漏和多网关端口冲突
         self.client.stop_listen()
 
     def _on_client_devices_updated(self):
@@ -108,12 +115,10 @@ class ZhongHongDataCoordinator(DataUpdateCoordinator):
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    # 卸载平台实体
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        # 停止网关 Socket 线程和取消回调
         coordinator._unregister_update_callback()
 
     return unload_ok
